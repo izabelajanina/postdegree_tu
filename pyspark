@@ -1,0 +1,68 @@
+from pyspark import SparkContext
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from pyspark import SQLContext
+from itertools import islice
+from pyspark.sql.functions import col
+from datetime import datetime
+import xml.etree.ElementTree as ET
+from pyspark.sql.types import StructType, StructField, StringType, FloatType, DateType, IntegerType
+
+COL_NAMES = ['CommentId', 'PostId', 'Score', 'Text', 'UserId', 'CreationDateComment']
+ELEMENTS_TO_EXTRAT = [c for c in COL_NAMES if c != 'CommentId']
+
+def set_schema():
+    """
+    Zdefiniowanie schematu dla DataFrame
+    """
+    schema_list = []
+    for c in COL_NAMES:
+        if c == 'Score':
+            schema_list.append(StructField(c, StringType(), True))
+        elif c == 'CreationDateComment':
+            schema_list.append(StructField(c, DateType(), True))
+        else:
+            schema_list.append(StructField(c, StringType(), True))
+   
+    return StructType(schema_list)
+
+def parse_xml(rdd):
+    """
+    wpisanie xml do rdd, parsowanie, ekstrakcja elementow i zwrot jako lista list
+
+    """
+    results = []
+    root = ET.fromstring(rdd[0])
+
+    for b in root.findall('row'):
+        rec = []
+        rec.append(b.attrib['Id'])
+        for e in ELEMENTS_TO_EXTRAT:
+                if b.attrib.get(e) is None:
+                    rec.append(None)
+                    continue
+                value = b.attrib.get(e)
+                if e == 'Score':
+                    value = float(value)
+                elif e == 'CreationDateComment':
+                    value = datetime.strptime(value, '%Y-%m-%dT%H:%M:%S.%f')
+                rec.append(value)
+        results.append(rec)
+
+    return results
+
+if __name__ == "__main__":
+    spark = SparkSession\
+        .builder\
+        .getOrCreate()
+
+# define the schema
+my_schema = set_schema()
+# read each xml file as one row, then convert to RDD
+file_rdd = spark.read.text("s3://stack-exchange-praca-dyplomowa-v2/input-xml/comment.xml", wholetext=True).rdd
+# parse xml tree, extract the records and transform to new RDD
+records_rdd = file_rdd.flatMap(parse_xml)
+# convert RDDs to DataFrame with the pre-defined schema
+comments_df = records_rdd.toDF(my_schema)
+comments_df.write.format("csv").mode("overwrite").save("s3://stack-exchange-praca-dyplomowa-v2/output-csv-parquet-comments/")
